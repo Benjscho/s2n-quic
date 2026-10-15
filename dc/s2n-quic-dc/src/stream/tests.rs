@@ -13,6 +13,7 @@ mod deterministic;
 mod fast_fail;
 mod idle_timeout;
 mod key_update;
+mod mtu;
 mod recv;
 mod request_response;
 mod restart;

@@ -66,7 +66,7 @@ bitvec = { version = "1.1.1", default-features = false }
 nix = {version = "0.31.1", features = ["socket", "uio", "fs", "time"] }
 
 [dev-dependencies]
-bach = { version = "0.1.0", features = ["net", "tokio-compat"] }
+bach = { version = "0.1.0", features = ["net", "net-monitor", "tokio-compat"] }
 s2n-tls-tokio = "0.3"
 bolero = "0.13"
 bolero-generator = "0.13"

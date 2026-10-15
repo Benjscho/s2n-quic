@@ -163,7 +163,10 @@ impl Server {
                     .with_io($io)?
                     .with_connection_close_formatter(crate::connection_close::TransparentTransport)?
                     .with_limits($limits)?
-                    .with_dc(map.clone())?
+                    .with_dc(secret::map::handshake::Endpoint {
+                        map: map.clone(),
+                        mtu_discovery: mtu.min(DEFAULT_MTU) > DEFAULT_BASE_MTU.min(mtu),
+                    })?
                     .with_event((event, builder.event_subscriber))?
                     .with_tls($tls)?;
                 #[cfg(any(test, feature = "testing"))]
@@ -347,7 +350,10 @@ impl Client {
         let client = client
             .with_connection_close_formatter(crate::connection_close::TransparentTransport)?
             .with_limits(connection_limits)?
-            .with_dc(map.clone())?
+            .with_dc(secret::map::handshake::Endpoint {
+                map: map.clone(),
+                mtu_discovery: mtu.min(DEFAULT_MTU) > DEFAULT_BASE_MTU.min(mtu),
+            })?
             .with_event((event, builder.event_subscriber))?
             .with_tls(tls_materials_provider)?
             .start()?;

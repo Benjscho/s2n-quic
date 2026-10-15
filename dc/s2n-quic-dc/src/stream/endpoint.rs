@@ -369,7 +369,7 @@ where
             // Parameter overrides remain authoritative. Register before spawning the worker;
             // an update during stream creation is delivered through its existing message queue.
             map.get_by_id_untracked(&shared.credentials().id)
-                .map(|entry| {
+                .and_then(|entry| {
                     let subscriber: Arc<dyn map::mtu::Subscriber> = shared.clone();
                     entry.subscribe_mtu(Arc::downgrade(&subscriber), worker.max_datagram_size)
                 })

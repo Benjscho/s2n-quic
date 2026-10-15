@@ -32,6 +32,7 @@ struct HandshakingPathInner {
     entry: Option<Arc<Entry>>,
     application_data: Option<ApplicationData>,
     map: Map,
+    mtu_discovery: bool,
 
     error: Option<Box<dyn Error + Send + Sync>>,
 }
@@ -53,6 +54,7 @@ impl HandshakingPath {
                 entry: None,
                 application_data: None,
                 map,
+                mtu_discovery: true,
                 error: None,
             })),
         }
@@ -64,6 +66,40 @@ impl HandshakingPath {
 
     pub fn take_error(&self) -> Option<Box<dyn Error + Send + Sync>> {
         self.inner.lock().error.take()
+    }
+}
+
+/// PSK endpoints know whether their configured maximum allows discovery.
+pub(crate) struct Endpoint {
+    pub map: Map,
+    pub mtu_discovery: bool,
+}
+
+impl dc::Endpoint for Endpoint {
+    type Path = HandshakingPath;
+
+    fn new_path(&mut self, info: &dc::ConnectionInfo) -> Option<Self::Path> {
+        let path = self.map.new_path(info)?;
+        path.inner.lock().mtu_discovery = self.mtu_discovery;
+        Some(path)
+    }
+
+    fn on_possible_secret_control_packet(
+        &mut self,
+        info: &DatagramInfo,
+        payload: &mut [u8],
+    ) -> bool {
+        self.map.on_possible_secret_control_packet(info, payload)
+    }
+}
+
+impl Drop for HandshakingPathInner {
+    fn drop(&mut self) {
+        // dc.complete precedes MTU discovery. Keep notifications until the transport
+        // releases the handshake path, including timeout and cancellation cleanup.
+        if let Some(entry) = &self.entry {
+            entry.finish_mtu_discovery();
+        }
     }
 }
 
@@ -249,6 +285,9 @@ impl HandshakingPathInner {
             self.application_data.take(),
         );
         let entry = Arc::new(entry);
+        if self.mtu_discovery {
+            entry.start_mtu_discovery();
+        }
         self.entry = Some(entry.clone());
         self.map.store.on_new_path_secrets(entry);
     }

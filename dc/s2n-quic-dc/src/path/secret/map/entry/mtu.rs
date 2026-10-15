@@ -12,7 +12,15 @@ pub(crate) trait Subscriber: Send + Sync {
 
 type List = SlotMap<DefaultKey, Weak<dyn Subscriber>>;
 
-/// Allocate the registry only while streams are subscribed.
+/// Only a live handshake with discovery enabled owns a registry. PSK paths configured
+/// without discovery and paths restored from storage never allocate one; completed
+/// handshakes release theirs.
+///
+/// Registration, the MTU snapshot, and updates share this lock. Callbacks run after
+/// unlocking and may arrive out of order, so send workers only adopt increases.
+/// Workers hold weak subscriptions, and removing a subscription need not wait for
+/// callbacks already collected by an update. Such callbacks can only enqueue an event
+/// on a still-live stream; they cannot retain a worker or create an ownership cycle.
 #[derive(Debug, Default)]
 pub(super) struct Subscribers {
     inner: Mutex<Option<Box<List>>>,
@@ -43,32 +51,46 @@ impl Drop for Subscription {
             let mut inner = entry.mtu_subscribers.inner.lock();
             if let Some(list) = inner.as_mut() {
                 list.remove(self.key);
-                if list.is_empty() {
-                    *inner = None;
-                }
             }
         }
     }
 }
 
 impl Entry {
+    /// Called before publishing the entry to the map.
+    pub(crate) fn start_mtu_discovery(&self) {
+        let mut inner = self.mtu_subscribers.inner.lock();
+        debug_assert!(inner.is_none());
+        *inner = Some(Box::new(List::with_key()));
+    }
+
+    /// The handshake can no longer update this entry. Existing streams keep their last
+    /// MTU; new streams can catch up without allocating or retaining a subscription.
+    pub(crate) fn finish_mtu_discovery(&self) {
+        *self.mtu_subscribers.inner.lock() = None;
+    }
+
+    #[cfg(test)]
+    pub(crate) fn mtu_discovery_active(&self) -> bool {
+        self.mtu_subscribers.inner.lock().is_some()
+    }
+
     pub(crate) fn subscribe_mtu(
         self: &Arc<Self>,
         subscriber: Weak<dyn Subscriber>,
         initial_mtu: u16,
-    ) -> Subscription {
+    ) -> Option<Subscription> {
         let (key, mtu) = {
             let mut inner = self.mtu_subscribers.inner.lock();
-            let list = inner.get_or_insert_with(|| Box::new(List::with_key()));
-            let key = list.insert(subscriber.clone());
+            let key = inner.as_mut().map(|list| list.insert(subscriber.clone()));
             // Read and register under the same lock used by updates, so a probe completing
             // between stream creation and registration cannot be missed.
             (key, self.parameters.max_datagram_size())
         };
-        let subscription = Subscription {
+        let subscription = key.map(|key| Subscription {
             entry: Arc::downgrade(self),
             key,
-        };
+        });
 
         // Call outside the registry lock: notifying can wake another thread immediately.
         // A newer notification can arrive first; receivers only adopt increases.
@@ -129,6 +151,7 @@ mod tests {
 
     fn setup() -> (Arc<Entry>, Arc<Recorder>, Weak<dyn Subscriber>) {
         let entry = Entry::fake("127.0.0.1:443".parse().unwrap(), None);
+        entry.start_mtu_discovery();
         let recorder = Arc::new(Recorder {
             entry: Arc::downgrade(&entry),
             updates: Default::default(),
@@ -150,7 +173,13 @@ mod tests {
         drop(subscription);
         entry.update_max_datagram_size(8900);
         assert_eq!(*recorder.updates.lock(), [8000, 8800]);
-        assert!(entry.mtu_subscribers.inner.lock().is_none());
+        assert!(entry
+            .mtu_subscribers
+            .inner
+            .lock()
+            .as_ref()
+            .unwrap()
+            .is_empty());
     }
 
     #[test]
@@ -161,6 +190,65 @@ mod tests {
         entry.update_max_datagram_size(initial);
         entry.update_max_datagram_size(initial - 1);
         assert!(recorder.updates.lock().is_empty());
+    }
+
+    #[test]
+    fn completed_discovery_catches_up_without_subscribing() {
+        let (entry, recorder, subscriber) = setup();
+        let initial = entry.parameters().max_datagram_size();
+        let subscription = entry.subscribe_mtu(subscriber.clone(), initial);
+        entry.update_max_datagram_size(8800);
+        entry.finish_mtu_discovery();
+        assert!(!entry.mtu_discovery_active());
+        drop(subscription);
+        assert!(entry.subscribe_mtu(subscriber, initial).is_none());
+        assert_eq!(*recorder.updates.lock(), [8800, 8800]);
+        assert!(!entry.mtu_discovery_active());
+    }
+
+    #[test]
+    fn default_entry_does_not_allocate_a_registry() {
+        let entry = Entry::fake("127.0.0.1:443".parse().unwrap(), None);
+        let recorder: Arc<dyn Subscriber> = Arc::new(Recorder {
+            entry: Arc::downgrade(&entry),
+            updates: Default::default(),
+        });
+        assert!(entry
+            .subscribe_mtu(
+                Arc::downgrade(&recorder),
+                entry.parameters().max_datagram_size()
+            )
+            .is_none());
+        assert!(!entry.mtu_discovery_active());
+    }
+
+    #[tokio::test]
+    async fn cancelled_worker_unregisters_while_mtu_is_updated() {
+        for _ in 0..100 {
+            let (entry, recorder, subscriber) = setup();
+            let subscription =
+                entry.subscribe_mtu(subscriber.clone(), entry.parameters().max_datagram_size());
+            let (ready, started) = tokio::sync::oneshot::channel();
+            let worker = tokio::spawn(async move {
+                let _subscription = subscription;
+                let _subscriber = recorder;
+                ready.send(()).unwrap();
+                std::future::pending::<()>().await;
+            });
+            started.await.unwrap();
+            let update = {
+                let entry = entry.clone();
+                std::thread::spawn(move || {
+                    entry.update_max_datagram_size(8800);
+                    entry.finish_mtu_discovery();
+                })
+            };
+            worker.abort();
+            assert!(worker.await.unwrap_err().is_cancelled());
+            update.join().unwrap();
+            assert!(subscriber.upgrade().is_none());
+            assert!(!entry.mtu_discovery_active());
+        }
     }
 
     #[test]
@@ -187,11 +275,17 @@ mod tests {
         entry.update_max_datagram_size(8800);
         assert_eq!(*recorder.updates.lock(), [8800]);
         drop(second);
-        assert!(entry.mtu_subscribers.inner.lock().is_none());
+        assert!(entry
+            .mtu_subscribers
+            .inner
+            .lock()
+            .as_ref()
+            .unwrap()
+            .is_empty());
     }
 
     #[test]
-    fn registration_racing_with_update_does_not_miss_mtu() {
+    fn registration_racing_with_final_update_does_not_miss_mtu() {
         for _ in 0..100 {
             let (entry, recorder, subscriber) = setup();
             let initial = entry.parameters().max_datagram_size();
@@ -206,8 +300,10 @@ mod tests {
             };
             barrier.wait();
             entry.update_max_datagram_size(8800);
+            entry.finish_mtu_discovery();
             let _subscription = register.join().unwrap();
             assert_eq!(recorder.updates.lock().last(), Some(&8800));
+            assert!(!entry.mtu_discovery_active());
         }
     }
 }

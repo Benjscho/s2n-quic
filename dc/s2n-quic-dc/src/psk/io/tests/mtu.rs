@@ -164,6 +164,13 @@ async fn check_stream_mtu(
             assert_eq!(events.max_mtu.load(Ordering::Relaxed), expected(mtu));
             let entry = map.get_by_id_untracked(stream.path_secret_id()).unwrap();
             assert_eq!(entry.parameters().max_datagram_size(), expected(mtu));
+            if mtu.unwrap_or(DEFAULT_BASE_MTU).min(DEFAULT_MTU) <= DEFAULT_BASE_MTU {
+                assert!(!entry.mtu_discovery_active());
+            }
+            // The transport releases tracking even while the application stream remains open.
+            while entry.mtu_discovery_active() {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
         }
         if drop_probes {
             assert!(dropped.load(Ordering::Relaxed) > 0);

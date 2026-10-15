@@ -875,11 +875,18 @@ fn dc_complete_mtu_configuration_matrix_with_receive_batching() -> Result<()> {
         max: u16,
     }
 
-    // Mirrors the current psk/io.rs configuration, which disables MTU discovery.
+    // Mirrors the default psk/io.rs configuration, which disables MTU discovery.
     const CURRENT: MtuConfiguration = MtuConfiguration {
         base: BASE_MTU,
         initial: BASE_MTU,
         max: BASE_MTU,
+    };
+
+    // PSK callers can opt into discovery without sending jumbo initial packets.
+    const OPT_IN: MtuConfiguration = MtuConfiguration {
+        base: BASE_MTU,
+        initial: BASE_MTU,
+        max: 8840,
     };
 
     // Mirrors the legacy configuration deployed before MTU discovery was disabled.
@@ -1112,7 +1119,7 @@ fn dc_complete_mtu_configuration_matrix_with_receive_batching() -> Result<()> {
         };
     }
 
-    let configurations = [
+    let mut configurations = vec![
         Configuration {
             name: "current_client_current_server",
             client_mtu: CURRENT,
@@ -1167,6 +1174,24 @@ fn dc_complete_mtu_configuration_matrix_with_receive_batching() -> Result<()> {
         },
     ];
 
+    // Opting into discovery should preserve the completion latency of the small-initial
+    // configuration, including when only one side upgrades from a jumbo-initial peer.
+    // These model historical configurations, not execution of historical binaries.
+    for (name, client_mtu, server_mtu, baseline) in [
+        ("opt_in_client_current_server", OPT_IN, CURRENT, 0),
+        ("current_client_opt_in_server", CURRENT, OPT_IN, 0),
+        ("opt_in_client_opt_in_server", OPT_IN, OPT_IN, 0),
+        ("opt_in_client_legacy_server", OPT_IN, LEGACY, 1),
+        ("legacy_client_opt_in_server", LEGACY, OPT_IN, 2),
+    ] {
+        configurations.push(Configuration {
+            name,
+            client_mtu,
+            server_mtu,
+            ..configurations[baseline]
+        });
+    }
+
     // The endpoint RNGs are seeded, so the full matrix remains deterministic while exercising the
     // production PTO jitter configuration. The path dimension includes both the
     // production-relevant constrained path and a jumbo-capable control.
@@ -1174,7 +1199,7 @@ fn dc_complete_mtu_configuration_matrix_with_receive_batching() -> Result<()> {
         for (server_mode, server_mode_index) in
             [(ServerMode::Inline, 0), (ServerMode::Offloaded, 1)]
         {
-            for configuration in configurations {
+            for configuration in &configurations {
                 let path_expectations = match packet_delivery {
                     PacketDelivery::Spaced => configuration.spaced,
                     PacketDelivery::Unspaced => configuration.unspaced,

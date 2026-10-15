@@ -119,6 +119,10 @@ impl<Event: s2n_quic::provider::event::Subscriber> Builder<Event> {
     /// Configure both endpoints to enable larger datagrams in both directions.
     /// The effective maximum is capped at 8940 bytes on Linux and 1450 bytes elsewhere.
     /// Probing may increase handshake connection lifetime.
+    ///
+    /// Upgrading callers that already set a larger MTU enables discovery without a
+    /// configuration change. Each endpoint controls its own sending MTU; an older peer
+    /// may continue sending smaller packets.
     pub fn with_mtu(mut self, mtu: u16) -> Self {
         self.mtu = Some(mtu);
         self
