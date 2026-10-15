@@ -124,28 +124,23 @@ impl Server {
         subscriber: Subscriber,
         builder: server::Builder<Event>,
     ) -> Result<Self, Error> {
-        // If the initial packet exceeds base MTU, s2n-quic's ability to recover from losing that
-        // packet is impaired on both client and server. This is especially true if the ClientHello
-        // is larger than the base MTU.
-        //
-        // Keep the first flight small even when callers opt in to MTU probing.
-        // Probing remains disabled by default.
+        // Keep probing disabled (base = initial = max), including when the caller
+        // explicitly opts into a larger fixed MTU. The conservative default avoids
+        // the handshake latency concerns associated with post-quantum TLS.
+        let mtu = builder.mtu.unwrap_or(DEFAULT_BASE_MTU).min(DEFAULT_MTU);
         let io = s2n_quic::provider::io::default::Builder::default()
             .with_receive_address(addr)?
             .with_internal_recv_buffer_size(BUFFER_SIZE)?
-            .with_base_mtu(DEFAULT_BASE_MTU.min(builder.mtu))?
-            .with_initial_mtu(DEFAULT_BASE_MTU.min(builder.mtu))?
-            .with_max_mtu(if builder.mtu_probing {
-                builder.mtu.min(DEFAULT_MTU)
-            } else {
-                DEFAULT_BASE_MTU.min(builder.mtu)
-            })?
+            .with_base_mtu(mtu)?
+            .with_initial_mtu(mtu)?
+            .with_max_mtu(mtu)?
             .build()?;
         let io = probe::Provider::new(io);
 
         let initial_max_data = builder.initial_data_window.unwrap_or_else(|| {
-            // default to only receive 10 packet worth before the application accepts the connection
-            builder.mtu as u64 * 10
+            // Preserve the existing default flow-control window independently of
+            // the conservative default MTU. Explicit overrides still scale it.
+            builder.mtu.unwrap_or(DEFAULT_MTU) as u64 * 10
         });
 
         let connection_limits = s2n_quic::provider::limits::Limits::new()
@@ -320,15 +315,12 @@ impl Client {
         builder: client::Builder<Event>,
     ) -> Result<Self, Error> {
         // For MTU configuration, see the comment on Server's io configuration.
+        let mtu = builder.mtu.unwrap_or(DEFAULT_BASE_MTU).min(DEFAULT_MTU);
         let io = s2n_quic::provider::io::default::Builder::default()
             .with_receive_address(addr)?
-            .with_base_mtu(DEFAULT_BASE_MTU.min(builder.mtu))?
-            .with_initial_mtu(DEFAULT_BASE_MTU.min(builder.mtu))?
-            .with_max_mtu(if builder.mtu_probing {
-                builder.mtu.min(DEFAULT_MTU)
-            } else {
-                DEFAULT_BASE_MTU.min(builder.mtu)
-            })?
+            .with_base_mtu(mtu)?
+            .with_initial_mtu(mtu)?
+            .with_max_mtu(mtu)?
             .with_internal_recv_buffer_size(BUFFER_SIZE)?
             .build()?;
 
@@ -1021,6 +1013,7 @@ pub struct ConnectionContext {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(target_os = "linux")]
     mod mtu;
 
     use super::*;
@@ -1062,8 +1055,9 @@ mod tests {
     /// A test event subscriber that records the maximum MTU reported by `MtuUpdated` events.
     #[derive(Clone, Default)]
     struct MtuRecorder {
+        initial_mtu: Arc<AtomicU16>,
         max_mtu: Arc<AtomicU16>,
-        search_complete: Arc<std::sync::atomic::AtomicBool>,
+        probes_sent: Arc<AtomicUsize>,
     }
 
     impl s2n_quic::provider::event::Subscriber for MtuRecorder {
@@ -1082,9 +1076,27 @@ mod tests {
             _meta: &s2n_quic::provider::event::ConnectionMeta,
             event: &s2n_quic::provider::event::events::MtuUpdated,
         ) {
+            let _ = self.initial_mtu.compare_exchange(
+                0,
+                event.mtu,
+                Ordering::Relaxed,
+                Ordering::Relaxed,
+            );
             self.max_mtu.fetch_max(event.mtu, Ordering::Relaxed);
-            self.search_complete
-                .store(event.search_complete, Ordering::Relaxed);
+        }
+
+        fn on_packet_sent(
+            &mut self,
+            _context: &mut Self::ConnectionContext,
+            _meta: &s2n_quic::provider::event::ConnectionMeta,
+            event: &s2n_quic::provider::event::events::PacketSent,
+        ) {
+            if matches!(
+                event.transmission_mode,
+                s2n_quic::provider::event::events::TransmissionMode::MtuProbing { .. }
+            ) {
+                self.probes_sent.fetch_add(1, Ordering::Relaxed);
+            }
         }
     }
 

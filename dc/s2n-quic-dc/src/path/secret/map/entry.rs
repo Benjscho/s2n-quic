@@ -292,15 +292,10 @@ impl Entry {
         self.parameters.clone()
     }
 
-    pub(crate) fn max_datagram_size(&self) -> u16 {
-        self.parameters.max_datagram_size()
-    }
-
     pub fn update_max_datagram_size(&self, mtu: u16) {
-        self.parameters.max_datagram_size.store(
-            mtu.min(crate::stream::MAX_DATAGRAM_SIZE as u16),
-            Ordering::Relaxed,
-        );
+        self.parameters
+            .max_datagram_size
+            .store(mtu, Ordering::Relaxed);
     }
 
     pub fn age(&self) -> Duration {

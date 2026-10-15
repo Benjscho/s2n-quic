@@ -4,7 +4,7 @@
 use crate::{
     path::secret,
     psk::io::{
-        HandshakeQueueConfig, Result, DEFAULT_IDLE_TIMEOUT, DEFAULT_MAX_DATA, DEFAULT_MTU,
+        HandshakeQueueConfig, Result, DEFAULT_IDLE_TIMEOUT, DEFAULT_MAX_DATA,
         DEFAULT_PTO_JITTER_PERCENTAGE,
     },
 };
@@ -21,8 +21,7 @@ pub struct Builder<
 > {
     pub(crate) event_subscriber: Event,
     pub(crate) data_window: u64,
-    pub(crate) mtu: u16,
-    pub(crate) mtu_probing: bool,
+    pub(crate) mtu: Option<u16>,
     pub(crate) max_idle_timeout: Duration,
     pub(crate) pto_jitter_percentage: u8,
     pub(crate) handshake_queue: HandshakeQueueConfig,
@@ -33,8 +32,7 @@ impl Default for Builder<s2n_quic::provider::event::default::Subscriber> {
         Self {
             event_subscriber: Default::default(),
             data_window: DEFAULT_MAX_DATA,
-            mtu: DEFAULT_MTU,
-            mtu_probing: false,
+            mtu: None,
             max_idle_timeout: DEFAULT_IDLE_TIMEOUT,
             pto_jitter_percentage: DEFAULT_PTO_JITTER_PERCENTAGE,
             handshake_queue: Default::default(),
@@ -52,7 +50,6 @@ impl<Event: s2n_quic::provider::event::Subscriber> Builder<Event> {
             event_subscriber,
             data_window: self.data_window,
             mtu: self.mtu,
-            mtu_probing: self.mtu_probing,
             max_idle_timeout: self.max_idle_timeout,
             pto_jitter_percentage: self.pto_jitter_percentage,
             handshake_queue: self.handshake_queue,
@@ -65,23 +62,21 @@ impl<Event: s2n_quic::provider::event::Subscriber> Builder<Event> {
         self
     }
 
-    /// Sets the largest IP packet size, including IP and UDP headers.
+    /// Sets the fixed IP MTU, including IP and UDP headers (default: 1450).
     ///
-    /// Unless [`Self::with_mtu_probing`] is enabled, transmission is capped at
-    /// the smaller of this value and 1450 bytes. With probing enabled, the
-    /// maximum is also capped at the platform's packet buffer size (8940 bytes
-    /// on Linux, 1450 bytes elsewhere).
+    /// Path MTU discovery remains disabled. This value is used for the base,
+    /// initial, and maximum MTU, so the network path must support it for both
+    /// the TLS handshake and UDP streams.
+    ///
+    /// The value is capped at the platform's packet buffer size: 8940 bytes on
+    /// Linux and 1450 bytes elsewhere.
+    ///
+    /// ```
+    /// let builder = s2n_quic_dc::psk::client::Builder::default()
+    ///     .with_mtu(8840);
+    /// ```
     pub fn with_mtu(mut self, mtu: u16) -> Self {
-        self.mtu = mtu;
-        self
-    }
-
-    /// Enables path MTU discovery up to the limit configured with [`Self::with_mtu`].
-    ///
-    /// Disabled by default. The handshake starts with IP packets no larger than
-    /// 1450 bytes; only acknowledged probes permit larger stream datagrams.
-    pub fn with_mtu_probing(mut self, enabled: bool) -> Self {
-        self.mtu_probing = enabled;
+        self.mtu = Some(mtu);
         self
     }
 

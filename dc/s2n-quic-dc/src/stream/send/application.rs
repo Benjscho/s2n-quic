@@ -76,11 +76,6 @@ impl<Sub> Writer<Sub>
 where
     Sub: event::Subscriber,
 {
-    #[cfg(test)]
-    pub(crate) fn max_datagram_size(&self) -> u16 {
-        self.0.shared.sender.path.load().max_datagram_size
-    }
-
     #[cfg(feature = "tokio")]
     pub(crate) fn replace_application_sockets(&mut self, sockets: socket::ArcApplication) {
         self.0.sockets = sockets;
