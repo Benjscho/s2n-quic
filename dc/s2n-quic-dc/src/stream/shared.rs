@@ -78,6 +78,14 @@ where
     pub common: Common<Subscriber, Clk>,
 }
 
+impl<Sub: event::Subscriber, C: Clock + ?Sized> crate::path::secret::map::mtu::Subscriber
+    for Shared<Sub, C>
+{
+    fn on_mtu_updated(&self, mtu: u16) {
+        self.sender.on_mtu_updated(mtu);
+    }
+}
+
 impl<Sub, C> Shared<Sub, C>
 where
     Sub: event::Subscriber,

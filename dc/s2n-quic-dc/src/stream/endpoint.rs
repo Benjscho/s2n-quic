@@ -88,6 +88,7 @@ where
         crypto,
         entry.map(),
         parameters,
+        parameter_override.is_none(),
         endpoint::Type::Client,
         subscriber,
         subscriber_ctx,
@@ -173,6 +174,7 @@ where
         crypto,
         map,
         parameters,
+        parameter_override.is_none(),
         endpoint::Type::Server,
         subscriber,
         subscriber_ctx,
@@ -203,6 +205,7 @@ fn build_stream<Env, P>(
     crypto: secret::map::Bidirectional,
     map: &Map,
     parameters: dc::ApplicationParams,
+    follow_path_mtu: bool,
     endpoint_type: endpoint::Type,
     subscriber: Env::Subscriber,
     subscriber_ctx: <Env::Subscriber as event::Subscriber>::ConnectionContext,
@@ -362,8 +365,21 @@ where
     if let Some((worker, socket)) = writer.1 {
         let (socket, recv_buffer) = socket.setup();
         let shared = shared.clone();
+        let mtu_subscription = if follow_path_mtu {
+            // Parameter overrides remain authoritative. Register before spawning the worker;
+            // an update during stream creation is delivered through its existing message queue.
+            map.get_by_id_untracked(&shared.credentials().id)
+                .map(|entry| {
+                    let subscriber: Arc<dyn map::mtu::Subscriber> = shared.clone();
+                    entry.subscribe_mtu(Arc::downgrade(&subscriber), worker.max_datagram_size)
+                })
+        } else {
+            None
+        };
 
         let task = async move {
+            // Unregister when the worker finishes or its task is cancelled.
+            let _mtu_subscription = mtu_subscription;
             let mut writer = send::worker::Worker::new(
                 socket,
                 recv_buffer,

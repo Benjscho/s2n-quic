@@ -33,6 +33,8 @@ use std::{
 #[cfg(test)]
 mod tests;
 
+pub(crate) mod mtu;
+
 pub type ApplicationData = Arc<dyn Any + Send + Sync>;
 
 #[derive(Debug, thiserror::Error)]
@@ -53,6 +55,7 @@ pub struct Entry {
     sender: sender::State,
     receiver: receiver::State,
     parameters: dc::ApplicationParams,
+    mtu_subscribers: mtu::Subscribers,
     // we store this as a u8 to allow the cleaner to separately "take" accessed for id and addr
     // maps while not having two writes and wasting an extra byte of space.
     accessed: AtomicU8,
@@ -69,6 +72,7 @@ impl SizeOf for Entry {
             sender,
             receiver,
             parameters,
+            mtu_subscribers,
             accessed,
             application_data,
             accessed_at,
@@ -80,6 +84,7 @@ impl SizeOf for Entry {
             + sender.size()
             + receiver.size()
             + parameters.size()
+            + mtu_subscribers.size()
             + accessed.size()
             + application_data.size()
             + accessed_at.size()
@@ -125,6 +130,7 @@ impl Entry {
             sender,
             receiver,
             parameters,
+            mtu_subscribers: Default::default(),
             accessed: AtomicU8::new(0),
             accessed_at: AccessedAt(AtomicU64::new(0)),
             application_data,
@@ -290,12 +296,6 @@ impl Entry {
 
     pub fn parameters(&self) -> dc::ApplicationParams {
         self.parameters.clone()
-    }
-
-    pub fn update_max_datagram_size(&self, mtu: u16) {
-        self.parameters
-            .max_datagram_size
-            .store(mtu, Ordering::Relaxed);
     }
 
     pub fn age(&self) -> Duration {

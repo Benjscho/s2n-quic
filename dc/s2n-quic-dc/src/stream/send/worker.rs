@@ -278,6 +278,15 @@ where
 
         while let Some(message) = self.shared.sender.pop_worker_message() {
             match message.event {
+                Event::MtuUpdated { mtu } => {
+                    if self.sender.on_mtu_updated(mtu) {
+                        self.shared.sender.path.update_info(
+                            ExplicitCongestionNotification::Ect0,
+                            self.sender.send_quantum_packets(),
+                            self.sender.max_datagram_size,
+                        );
+                    }
+                }
                 Event::Shutdown { queue, kind } => {
                     // if the application is panicking then we notify the peer
                     if let Some(error) = kind.error_code() {

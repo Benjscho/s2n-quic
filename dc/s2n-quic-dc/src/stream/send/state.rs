@@ -205,6 +205,19 @@ impl State {
         }
     }
 
+    /// Adopt successful probes that completed after this stream opened.
+    #[inline]
+    pub fn on_mtu_updated(&mut self, mtu: u16) -> bool {
+        let mtu = mtu.min(crate::stream::MAX_DATAGRAM_SIZE as u16);
+        // Existing retransmissions may still use the old size, so only adopt increases.
+        if mtu > self.max_datagram_size {
+            self.max_datagram_size = mtu;
+            self.cca.on_mtu_update(mtu);
+            return true;
+        }
+        false
+    }
+
     /// Initializes the worker as a client
     #[inline]
     pub fn init_client(&mut self, clock: &impl Clock) {
@@ -1415,5 +1428,27 @@ impl timer::Provider for State {
         self.pto.timers(query)?;
         self.idle_timer.timers(query)?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod mtu_tests {
+    use super::*;
+
+    #[test]
+    fn duplicate_and_reordered_mtu_notifications_do_not_reduce_mtu_or_inflate_cwnd() {
+        let params = s2n_quic_core::dc::testing::TEST_APPLICATION_PARAMS;
+        let mut sender = State::new(stream::Id::normal(VarInt::ZERO).unwrap(), &params);
+        let initial_cwnd = sender.cca.congestion_window();
+        assert!(sender.on_mtu_updated(8800));
+        let jumbo_cwnd = sender.cca.congestion_window();
+        assert!(jumbo_cwnd > initial_cwnd);
+
+        // A catch-up notification from registration can arrive after a newer probe.
+        for mtu in [8800, 8000, params.max_datagram_size()] {
+            assert!(!sender.on_mtu_updated(mtu));
+            assert_eq!(sender.max_datagram_size, 8800);
+            assert_eq!(sender.cca.congestion_window(), jumbo_cwnd);
+        }
     }
 }

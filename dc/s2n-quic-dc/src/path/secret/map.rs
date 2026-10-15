@@ -41,6 +41,7 @@ mod event_tests;
 mod tests;
 
 pub use disk::{deserialize, DiskEntry, Entries, Serializer, SerializerBuilder};
+pub(crate) use entry::mtu;
 pub use entry::Entry;
 pub use proactive_unknown_path_secret::SendStats;
 use state::StateBuilderError;
@@ -297,6 +298,10 @@ impl Map {
     pub fn get_untracked(&self, peer: SocketAddr) -> Option<Peer> {
         let entry = self.store.get_by_addr_untracked(&peer)?;
         Some(Peer::new(&entry, self))
+    }
+
+    pub(crate) fn get_by_id_untracked(&self, id: &Id) -> Option<Arc<Entry>> {
+        self.store.get_by_id_untracked(id)
     }
 
     /// Retrieve a sealer by path secret ID.
