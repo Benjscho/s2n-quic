@@ -171,6 +171,12 @@ where
 pub struct MapBuilderError(StateBuilderError);
 
 impl Map {
+    /// Retain the negotiated path parameters for an active stream, even if the
+    /// cache entry is subsequently retired or evicted.
+    pub(crate) fn stream_path(&self, id: &Id) -> Option<Arc<Entry>> {
+        self.store.get_by_id_untracked(id)
+    }
+
     /// Begins configuring a [`Map`].
     ///
     /// The signer, capacity, clock, and subscriber are all required; [`Builder::build`] fails if

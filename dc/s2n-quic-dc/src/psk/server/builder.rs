@@ -21,6 +21,7 @@ pub struct Builder<
     pub(crate) data_window: u64,
     pub(crate) initial_data_window: Option<u64>,
     pub(crate) mtu: u16,
+    pub(crate) mtu_probing: bool,
     pub(crate) max_idle_timeout: Duration,
     pub(crate) pto_jitter_percentage: u8,
     #[cfg(any(test, feature = "testing"))]
@@ -52,6 +53,7 @@ impl Default for Builder<s2n_quic::provider::event::default::Subscriber> {
             data_window: DEFAULT_MAX_DATA,
             initial_data_window: None,
             mtu: DEFAULT_MTU,
+            mtu_probing: false,
             max_idle_timeout: DEFAULT_IDLE_TIMEOUT,
             pto_jitter_percentage: DEFAULT_PTO_JITTER_PERCENTAGE,
             #[cfg(any(test, feature = "testing"))]
@@ -73,6 +75,7 @@ impl<Event: s2n_quic::provider::event::Subscriber> Builder<Event> {
             data_window: self.data_window,
             initial_data_window: self.initial_data_window,
             mtu: self.mtu,
+            mtu_probing: self.mtu_probing,
             max_idle_timeout: self.max_idle_timeout,
             pto_jitter_percentage: self.pto_jitter_percentage,
             #[cfg(any(test, feature = "testing"))]
@@ -109,9 +112,23 @@ impl<Event: s2n_quic::provider::event::Subscriber> Builder<Event> {
         self
     }
 
-    /// Sets the largest maximum transmission unit (MTU) that will be used for transmission
+    /// Sets the largest IP packet size, including IP and UDP headers.
+    ///
+    /// Unless [`Self::with_mtu_probing`] is enabled, transmission is capped at
+    /// the smaller of this value and 1450 bytes. With probing enabled, the
+    /// maximum is also capped at the platform's packet buffer size (8940 bytes
+    /// on Linux, 1450 bytes elsewhere).
     pub fn with_mtu(mut self, mtu: u16) -> Self {
         self.mtu = mtu;
+        self
+    }
+
+    /// Enables path MTU discovery up to the limit configured with [`Self::with_mtu`].
+    ///
+    /// Disabled by default. The handshake starts with IP packets no larger than
+    /// 1450 bytes; only acknowledged probes permit larger stream datagrams.
+    pub fn with_mtu_probing(mut self, enabled: bool) -> Self {
+        self.mtu_probing = enabled;
         self
     }
 

@@ -19,6 +19,12 @@ pub struct Controller {
 
 impl Controller {
     #[inline]
+    pub fn on_mtu_update(&mut self, max_datagram_size: u16) {
+        self.controller
+            .on_mtu_update(max_datagram_size, &mut NoopPublisher);
+    }
+
+    #[inline]
     pub fn new(max_datagram_size: u16) -> Self {
         Self {
             controller: BbrCongestionController::new(max_datagram_size, Default::default()),

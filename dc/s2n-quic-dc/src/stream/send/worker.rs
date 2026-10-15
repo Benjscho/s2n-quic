@@ -110,7 +110,10 @@ impl Snapshot {
             shared.sender.flow.release_max(self.flow_offset);
         }
 
-        if initial.send_quantum != self.send_quantum {
+        if initial.send_quantum != self.send_quantum
+            || initial.max_datagram_size != self.max_datagram_size
+            || initial.ecn != self.ecn
+        {
             let send_quantum = (self.send_quantum as u64).div_ceil(self.max_datagram_size as u64);
             let send_quantum = send_quantum.try_into().unwrap_or(u8::MAX);
             shared
@@ -206,6 +209,7 @@ where
     #[inline]
     fn poll_impl(&mut self, cx: &mut Context) -> Poll<()> {
         let initial = self.snapshot();
+        self.sender.update_path_mtu();
 
         tracing::trace!(
             view = "before",

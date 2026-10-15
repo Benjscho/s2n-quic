@@ -145,6 +145,7 @@ pub struct State {
     pub local_max_data_window: VarInt,
     pub peer_activity: Option<PeerActivity>,
     pub max_datagram_size: u16,
+    pub(crate) path: Option<std::sync::Arc<crate::path::secret::map::Entry>>,
     pub max_sent_segment_size: u16,
     pub is_reliable: bool,
 }
@@ -200,6 +201,7 @@ impl State {
             local_max_data_window: local_max_data,
             peer_activity: None,
             max_datagram_size,
+            path: None,
             max_sent_segment_size: 0,
             is_reliable: stream_id.is_reliable,
         }
@@ -212,6 +214,18 @@ impl State {
         // make sure a packet gets sent soon if the application doesn't
         self.force_arm_pto_timer(clock);
         self.update_idle_timer(clock);
+    }
+
+    /// A stream may start before handshake MTU probing finishes. Read the
+    /// confirmed path size again instead of retaining the startup snapshot.
+    pub(crate) fn update_path_mtu(&mut self) {
+        if let Some(path) = &self.path {
+            let mtu = path.max_datagram_size();
+            if mtu != self.max_datagram_size {
+                self.max_datagram_size = mtu;
+                self.cca.on_mtu_update(mtu);
+            }
+        }
     }
 
     #[inline]

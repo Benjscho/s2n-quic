@@ -128,14 +128,18 @@ impl Server {
         // packet is impaired on both client and server. This is especially true if the ClientHello
         // is larger than the base MTU.
         //
-        // We are turning off probing fully (base = initial = max MTU) while we work through
-        // improved test coverage.
+        // Keep the first flight small even when callers opt in to MTU probing.
+        // Probing remains disabled by default.
         let io = s2n_quic::provider::io::default::Builder::default()
             .with_receive_address(addr)?
             .with_internal_recv_buffer_size(BUFFER_SIZE)?
             .with_base_mtu(DEFAULT_BASE_MTU.min(builder.mtu))?
             .with_initial_mtu(DEFAULT_BASE_MTU.min(builder.mtu))?
-            .with_max_mtu(DEFAULT_BASE_MTU.min(builder.mtu))?
+            .with_max_mtu(if builder.mtu_probing {
+                builder.mtu.min(DEFAULT_MTU)
+            } else {
+                DEFAULT_BASE_MTU.min(builder.mtu)
+            })?
             .build()?;
         let io = probe::Provider::new(io);
 
@@ -320,7 +324,11 @@ impl Client {
             .with_receive_address(addr)?
             .with_base_mtu(DEFAULT_BASE_MTU.min(builder.mtu))?
             .with_initial_mtu(DEFAULT_BASE_MTU.min(builder.mtu))?
-            .with_max_mtu(DEFAULT_BASE_MTU.min(builder.mtu))?
+            .with_max_mtu(if builder.mtu_probing {
+                builder.mtu.min(DEFAULT_MTU)
+            } else {
+                DEFAULT_BASE_MTU.min(builder.mtu)
+            })?
             .with_internal_recv_buffer_size(BUFFER_SIZE)?
             .build()?;
 
@@ -1013,6 +1021,8 @@ pub struct ConnectionContext {
 
 #[cfg(test)]
 mod tests {
+    mod mtu;
+
     use super::*;
     use crate::{
         path::secret::{stateless_reset::Signer, Map},
@@ -1053,6 +1063,7 @@ mod tests {
     #[derive(Clone, Default)]
     struct MtuRecorder {
         max_mtu: Arc<AtomicU16>,
+        search_complete: Arc<std::sync::atomic::AtomicBool>,
     }
 
     impl s2n_quic::provider::event::Subscriber for MtuRecorder {
@@ -1072,6 +1083,8 @@ mod tests {
             event: &s2n_quic::provider::event::events::MtuUpdated,
         ) {
             self.max_mtu.fetch_max(event.mtu, Ordering::Relaxed);
+            self.search_complete
+                .store(event.search_complete, Ordering::Relaxed);
         }
     }
 
@@ -1154,7 +1167,7 @@ mod tests {
                 NoopSubscriber,
                 s2n_quic::provider::event::default::Subscriber,
             >(
-                "0.0.0.0:0".parse().unwrap(),
+                "127.0.0.1:0".parse().unwrap(),
                 client_map,
                 tls.start_client().unwrap(),
                 subscriber,
@@ -1870,7 +1883,7 @@ mod tests {
             NoopSubscriber,
             s2n_quic::provider::event::default::Subscriber,
         >(
-            "0.0.0.0:0".parse().unwrap(),
+            "127.0.0.1:0".parse().unwrap(),
             client_map,
             tls.start_client().unwrap(),
             subscriber,
